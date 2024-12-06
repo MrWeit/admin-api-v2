@@ -10,7 +10,6 @@ const redisClient = new Redis({
   port: Number(process.env.REDIS_PORT),
   password: process.env.REDIS_PASSWORD,
   username: process.env.REDIS_USERNAME,
-  tls:{},
 });
 
 redisClient.on('error', (err) => {

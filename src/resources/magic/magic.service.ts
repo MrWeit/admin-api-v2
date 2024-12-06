@@ -1,5 +1,4 @@
 // src/controllers/magic.service.ts
-
 import LoggerService from "@resources/logger/logger.service";
 import { MiningAccountWithPoolAndProxy } from "@resources/miningAccount/miningAccount.service";
 import { HashrateConverter } from "@utils/functions";
@@ -21,16 +20,19 @@ class MagicService {
         miningAccounts: MiningAccountWithPoolAndProxy[]
     ): Promise<void> => {
         const miningAccountsKey = `client:{123}:${clientID}:miningAccounts`;
-
+        
         // Add all miningAccountIDs to the client's set
-        const miningAccountIDs = miningAccounts.map(account => account.id.toString());
-        if (miningAccountIDs.length > 0) {
-            await redisClient.sadd(miningAccountsKey, miningAccountIDs);
+        const miningAccountWorkerNames = miningAccounts.map(account => account.workerName);
+        if (miningAccountWorkerNames.length > 0) {
+            await redisClient.sadd(miningAccountsKey, miningAccountWorkerNames);
         }
-
+        
         // For each mining account, create a hash with necessary details only if it doesn't exist
         for (const account of miningAccounts) {
-            const miningAccountKey = `miningAccount:{123}:${account.id}`;
+            //Constructs the worker name workerName.workerPrefix
+            const workerName = account.workerName;
+            const workerNameWithPrefix = `${workerName}.${Math.floor(Math.random() * 999) + 1}`;
+            const miningAccountKey = `miningAccount:{123}:${workerName}`;
 
             // Start a transaction
             const multi = redisClient.multi();
@@ -41,43 +43,39 @@ class MagicService {
             // Execute the transaction
             const replies = await multi.exec();
             if (!replies || replies.length === 0) {
-                this.log.createLog("ERROR", `Redis transaction failed for mining account '${account.id}'.`, "");
+                this.log.createLog("ERROR", `Redis transaction failed for mining account '${workerName}'.`, "");
                 continue;
             }
 
             const [error, result] = replies[0];
 
             if (error) {
-                this.log.createLog("ERROR", `Redis error while checking mining account '${account.id}'.`, error.message);
+                this.log.createLog("ERROR", `Redis error while checking mining account '${workerName}'.`, error.message);
                 continue;
             }
 
             const exists = result === 1;
 
-            //Constructs the worker name workerName.workerPrefix
-            const workerName = `${account.workerName}.${Math.floor(Math.random() * 999) + 1}`;
 
             if (!exists) {
                 // If the mining account doesn't exist, set the hash fields
                 multi.hmset(miningAccountKey, {
-                    worker_name: workerName, // Ensure `workerName` is part of `MiningAccountWithPoolAndProxy`
+                    pool_worker_name: workerNameWithPrefix,
+                    account_id: account.id, // Ensure `workerName` is part of `MiningAccountWithPoolAndProxy`
                     hashrate_limit: HashrateConverter.petahashesToHashes(account.hashrateLimitPh),
-                    sum_diffs_last_hour: "0",
                     multiplication_factor: account.multiplicationFactor.toString(),
-                    average_hashrate_hour: "0",
-                    average_hashrate_day: "0",
                     clientID: account.clientId.toString(),
                     coin: account.coin,
                 });
 
                 // Initialize the sorted set for shares if not already present
-                const sharesKey = `shares:{123}:${account.id}`;
+                const sharesKey = `shares:{123}:${workerName}`;
                 multi.exists(sharesKey);
 
                 // Execute the transaction
                 const setReplies = await multi.exec();
                 if (!setReplies || setReplies.length < 2) {
-                    this.log.createLog("ERROR", `Redis transaction failed while setting mining account '${account.id}'.`, "");
+                    this.log.createLog("ERROR", `Redis transaction failed while setting mining account '${workerName}'.`, "");
                     continue;
                 }
 
@@ -85,12 +83,12 @@ class MagicService {
                 const [sharesExistsError, sharesExistsResult] = setReplies[1];
 
                 if (setError) {
-                    this.log.createLog("ERROR", `Redis error while setting mining account '${account.id}'.`, setError.message);
+                    this.log.createLog("ERROR", `Redis error while setting mining account '${workerName}'.`, setError.message);
                     continue;
                 }
 
                 if (sharesExistsError) {
-                    this.log.createLog("ERROR", `Redis error while checking shares for mining account '${account.id}'.`, sharesExistsError.message);
+                    this.log.createLog("ERROR", `Redis error while checking shares for mining account '${workerName}'.`, sharesExistsError.message);
                     continue;
                 }
 
@@ -101,7 +99,7 @@ class MagicService {
                     // Initialize shares sorted set
                     const zaddReply = await redisClient.zadd(sharesKey, 0, ""); // Initialize with a dummy value or leave empty
                     if (zaddReply !== 0) {
-                        this.log.createLog("ERROR", `Redis error while initializing shares for mining account '${account.id}'.`, "");
+                        this.log.createLog("ERROR", `Redis error while initializing shares for mining account '${workerName}'.`, "");
                     }
                 }
 
